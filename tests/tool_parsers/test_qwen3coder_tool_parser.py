@@ -976,3 +976,57 @@ fahrenheit
     assert args["city"] == "Dallas"
     assert args["state"] == "TX"
     assert args["unit"] == "fahrenheit"
+
+
+def test_extract_tool_calls_streaming_emits_opening_brace_before_first_param(
+    qwen3_tool_parser, qwen3_tokenizer
+):
+    """Regression: arguments must start with '{' for streaming tool calls."""
+    tools = [
+        ChatCompletionToolsParam(
+            type="function",
+            function={
+                "name": "bash",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"},
+                        "description": {"type": "string"},
+                        "timeout": {"type": "integer"},
+                    },
+                },
+            },
+        )
+    ]
+    request = ChatCompletionRequest(model=MODEL, messages=[], tools=tools)
+
+    model_output = """<tool_call>
+<function=bash>
+<parameter=command>
+export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && nvm install 22
+</parameter>
+<parameter=description>
+Install Node.js 22 via nvm
+</parameter>
+<parameter=timeout>
+120000
+</parameter>
+</function>
+</tool_call>"""
+
+    streamed_arguments = ""
+    for delta_message in stream_delta_message_generator(
+        qwen3_tool_parser, qwen3_tokenizer, model_output, request
+    ):
+        if delta_message.tool_calls:
+            for tool_call in delta_message.tool_calls:
+                if tool_call.function and tool_call.function.arguments is not None:
+                    streamed_arguments += tool_call.function.arguments
+
+    assert streamed_arguments.startswith("{")
+    parsed = json.loads(streamed_arguments)
+    assert parsed == {
+        "command": 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && nvm install 22',
+        "description": "Install Node.js 22 via nvm",
+        "timeout": 120000,
+    }
