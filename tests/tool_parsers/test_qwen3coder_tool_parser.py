@@ -976,3 +976,74 @@ fahrenheit
     assert args["city"] == "Dallas"
     assert args["state"] == "TX"
     assert args["unit"] == "fahrenheit"
+
+
+def test_extract_tool_calls_streaming_emits_opening_brace_before_first_param(
+    qwen3_tool_parser,
+):
+    """Regression: arguments must start with '{' for streaming tool calls."""
+    tools = [
+        ChatCompletionToolsParam(
+            type="function",
+            function={
+                "name": "bash",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"},
+                        "description": {"type": "string"},
+                        "timeout": {"type": "integer"},
+                    },
+                },
+            },
+        )
+    ]
+    request = ChatCompletionRequest(model=MODEL, messages=[], tools=tools)
+
+    chunks = [
+        "<tool_call>",
+        '<function=bash><parameter=command>\nexport NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && nvm install 22\n</parameter>',
+        "<parameter=description>\nInstall Node.js 22 via nvm\n</parameter>",
+        "<parameter=timeout>\n120000\n</parameter>",
+        "</function></tool_call>",
+    ]
+
+    previous_text = ""
+    previous_token_ids: list[int] = []
+    current_token_ids: list[int] = []
+    streamed_arguments = ""
+
+    for i, chunk in enumerate(chunks):
+        current_text = previous_text + chunk
+        delta_token_ids: list[int] = (
+            [qwen3_tool_parser.tool_call_start_token_id]
+            if i == 0 and qwen3_tool_parser.tool_call_start_token_id is not None
+            else []
+        )
+
+        delta_message = qwen3_tool_parser.extract_tool_calls_streaming(
+            previous_text=previous_text,
+            current_text=current_text,
+            delta_text=chunk,
+            previous_token_ids=previous_token_ids,
+            current_token_ids=current_token_ids,
+            delta_token_ids=delta_token_ids,
+            request=request,
+        )
+
+        if delta_message and delta_message.tool_calls:
+            for tool_call in delta_message.tool_calls:
+                if tool_call.function and tool_call.function.arguments is not None:
+                    streamed_arguments += tool_call.function.arguments
+
+        previous_text = current_text
+        previous_token_ids = current_token_ids
+        current_token_ids = current_token_ids + [i]
+
+    assert streamed_arguments.startswith("{")
+    parsed = json.loads(streamed_arguments)
+    assert parsed == {
+        "command": 'export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && nvm install 22',
+        "description": "Install Node.js 22 via nvm",
+        "timeout": 120000,
+    }

@@ -511,8 +511,10 @@ class Qwen3CoderToolParser(ToolParser):
 
         # We've sent header, now handle function body
         if self.in_function:
-            # Send opening brace if not sent yet
-            if not self.json_started and self.parameter_prefix not in delta_text:
+            # Always emit the opening JSON brace first before any parameter
+            # fragment, otherwise streamed arguments may start with a key
+            # (e.g. `"command": ...`) and become invalid JSON.
+            if not self.json_started:
                 self.json_started = True
                 return DeltaMessage(
                     tool_calls=[
@@ -522,10 +524,6 @@ class Qwen3CoderToolParser(ToolParser):
                         )
                     ]
                 )
-
-            # Make sure json_started is set if we're processing parameters
-            if not self.json_started:
-                self.json_started = True
 
             # Check for function end in accumulated text
             if not self.json_closed and self.function_end_token in tool_text:
